@@ -130,7 +130,7 @@ curl -X POST http://localhost:2019/frankenphp/workers/restart
 ### Worker Failures
 
 If a worker script crashes with a non-zero exit code, FrankenPHP will restart it with an exponential backoff strategy.
-If the worker script stays up longer than the last backoff \* 2,
+If the worker script stays up longer than the last backoff × 2,
 it will not penalize the worker script and restart it again.
 However, if the worker script continues to fail with a non-zero exit code in a short period of time
 (for example, having a typo in a script), FrankenPHP will crash with the error: `too many consecutive failures`.
@@ -168,3 +168,38 @@ $handler = static function () use ($workerServer) {
 
 // ...
 ```
+
+Most superglobals (`$_GET`, `$_POST`, `$_COOKIE`, `$_FILES`, `$_SERVER`, `$_REQUEST`) are automatically reset between requests.
+However, **`$_ENV` is currently not reset between requests**.
+This means that any modifications made to `$_ENV` during a request will persist and be visible to subsequent requests handled by the same worker thread.
+Avoid storing request-specific or sensitive data in `$_ENV`.
+
+## State Persistence
+
+Because worker mode keeps the PHP process alive between requests, the following state persists across requests:
+
+- **Static variables**: Variables declared with `static` inside functions or methods retain their values between requests.
+- **Class static properties**: Static properties on classes persist between requests.
+- **Global variables**: Variables in the global scope of the worker script persist between requests.
+- **In-memory caches**: Any data stored in memory (arrays, objects) outside the request handler persists.
+
+This is by design and is what makes worker mode fast. However, it requires attention to avoid unintended side effects:
+
+```php
+<?php
+function getCounter(): int {
+    static $count = 0;
+    return ++$count; // Increments across requests!
+}
+
+$handler = static function () {
+    echo getCounter(); // 1, 2, 3, ... for each request on this thread
+};
+
+while (\frankenphp_handle_request($handler)) {
+    // ...
+}
+```
+
+When writing worker scripts, make sure to reset any request-specific state between requests.
+Frameworks like [Symfony](symfony.md) and [Laravel Octane](laravel.md) take care of resetting most state for you, but you may still need to reset your own services. With Symfony, services that hold request-specific state should implement [`Symfony\Contracts\Service\ResetInterface`](https://github.com/symfony/contracts/blob/main/Service/ResetInterface.php) so they're reset by the kernel between requests.
